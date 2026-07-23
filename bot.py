@@ -1,74 +1,95 @@
 import os
+import logging
 import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import discord
+from flask import Flask
+from discord.ext import commands
+from discord import Member
 
-# Servidor simples para manter o Render ativo
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Bot esta rodando!")
+# ─── CONFIGURAÇÕES DE LOGGING ──────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] %(levelname)-8s %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+logger = logging.getLogger("ModerationBot")
 
-    def log_message(self, format, *args):
-        return
+# ─── CONFIGURAÇÕES DO BOT ──────────────────────────────────────────────────
+TOKEN = os.environ.get("DISCORD_TOKEN")
+CARGO_PROTEGIDO_ID = 1529646696550764686  # ID do cargo 'bseven'
+CARGO_BOT_ID = 1529601980505264141        # ID do cargo do Bot
+
+# ─── INTENTS ───────────────────────────────────────────────────────────────
+# Necessário habilitar 'Server Members Intent' no Discord Developer Portal
+intents = discord.Intents.all()
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+# ─── SERVIDOR WEB (KEEP-ALIVE PARA RENDER/CLOUD) ──────────────────────────
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot de Proteção bseven está ONLINE!"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
-    server.serve_forever()
+    app.run(host="0.0.0.0", port=port)
 
-threading.Thread(target=run_web_server, daemon=True).start()
-
-# --- CÓDIGO DO BOT ---
-import asyncio
-import discord
-from discord import Member, Role, utils
-from discord.ext import commands
-
-TOKEN = os.environ.get("DISCORD_TOKEN", "SEU_TOKEN_AQUI")
-
-CARGO_PROTEGIDO_NOME = "1529646696550764686"
-
-CARGOS_DE_MUTE = [
-    "Muted",
-    "muted",
-    "Mute",
-    "Silenciado",
-    "silenciado/a",
-    "silenced"
-]
-
-intents = discord.Intents.default()
-intents.members = True
-intents.guilds = True
-intents.message_content = True
-
-bot = commands.Bot(command_prefix="!", intents=intents)
+# ─── EVENTOS ───────────────────────────────────────────────────────────────
 
 @bot.event
 async def on_ready():
-    print(f'Bot conectado como {bot.user.name}')
+    logger.info(f"Bot logado como {bot.user} (ID: {bot.user.id})")
+    logger.info(f"Protegendo cargo ID: {CARGO_PROTEGIDO_ID}")
 
 @bot.event
-async def on_member_update(before, after):
-    cargo_protegido = utils.get(after.guild.roles, name=CARGO_PROTEGIDO_NOME)
+async def on_member_update(before: Member, after: Member):
+    """
+    Lógica de Proteção: Monitora mudanças de cargos.
+    Se um membro com o cargo 'bseven' receber um cargo de 'mute', o bot remove.
+    """
     
-    if not cargo_protegido:
+    # 1. Segurança: Ignora o próprio bot e evita loops
+    if after.bot:
         return
 
-    tem_cargo_protegido = cargo_protegido in after.roles
+    # 2. Verifica se houve mudança nos cargos
+    if before.roles == after.roles:
+        return
 
-    if tem_cargo_protegido:
-        cargos_remover = [role for role in after.roles if role.name in CARGOS_DE_MUTE]
-        
-        if cargos_remover:
+    # 3. Verifica se o membro possui o cargo protegido 'bseven'
+    possui_bseven = any(role.id == CARGO_PROTEGIDO_ID for role in after.roles)
+    if not possui_bseven:
+        return
+
+    # 4. Identifica se algum cargo novo com 'mute' no nome foi adicionado
+    cargos_adicionados = [role for role in after.roles if role not in before.roles]
+    
+    for cargo in cargos_adicionados:
+        if "mute" in cargo.name.lower():
+            logger.info(f"Tentativa de mute detectada em {after.name} (Cargo: {cargo.name})")
+            
             try:
-                await after.remove_roles(*cargos_remover, reason=f"Protecao do cargo {CARGO_PROTEGIDO_NOME}")
-                print(f"Mute removido de {after.name} por ter o cargo {CARGO_PROTEGIDO_NOME}")
+                # Remove o cargo de mute
+                await after.remove_roles(cargo, reason="Proteção Automática: Membro possui cargo bseven.")
+                logger.info(f"Sucesso: Cargo '{cargo.name}' removido de {after.name}.")
+                
             except discord.Forbidden:
-                print(f"Erro: Sem permissao para remover o mute de {after.name}")
+                logger.error(
+                    f"ERRO DE PERMISSÃO: Não foi possível remover o cargo de {after.name}. "
+                    "Verifique se o cargo do bot está ACIMA do cargo de mute na hierarquia "
+                    "e se a permissão 'Gerenciar Cargos' está ativa."
+                )
             except Exception as e:
-                print(f"Erro ao remover cargo: {e}")
+                logger.error(f"ERRO INESPERADO ao processar {after.name}: {e}")
+
+# ─── INICIALIZAÇÃO ─────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    bot.run(TOKEN)
+    if not TOKEN:
+        logger.critical("ERRO: Variável de ambiente DISCORD_TOKEN não encontrada!")
+    else:
+        # Inicia o servidor web em uma thread separada
+        threading.Thread(target=run_web_server, daemon=True).start()
+        # Inicia o bot do Discord
+        bot.run(TOKEN)

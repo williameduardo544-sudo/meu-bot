@@ -27,7 +27,7 @@ from discord.ext import commands
 
 TOKEN = os.environ.get("DISCORD_TOKEN", "SEU_TOKEN_AQUI")
 
-CARGO_PROTEGIDO_NOME = "slnK"
+CARGO_PROTEGIDO_NOME = "bseven"
 
 CARGOS_DE_MUTE = [
     "Muted",
